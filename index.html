@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PinPin 足跡</title>
+
+    <!-- 核心樣式與套件 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- 自定義 Tailwind Theme -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        line: '#06C755',
+                        'line-dark': '#05b34c',
+                    },
+                    spacing: {
+                        '128': '32rem',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            /* 防止 iOS 橡皮筋效果 */
+            overscroll-behavior-y: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* Leaflet 地圖容器 */
+        #map {
+            height: 35vh;
+            width: 100%;
+            z-index: 0;
+        }
+
+        /* 隱藏滾動條但保留功能 */
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col font-sans">
+
+    <!-- 非 LINE 環境的頂部提示 (預設隱藏) -->
+    <div id="line-fallback-banner"
+        class="hidden bg-white p-4 shadow-md z-50 sticky top-0 border-b border-gray-100 flex flex-col gap-3">
+        <div class="flex items-center gap-2 text-amber-600 font-medium text-sm">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span>建議在 LINE APP 開啟以獲得完整功能</span>
+        </div>
+        <button id="open-line-btn"
+            class="w-full bg-line text-white font-bold py-2.5 rounded-lg active:scale-95 transition flex items-center justify-center gap-2 hover:bg-line-dark shadow-sm">
+            <i class="fa-brands fa-line text-lg"></i>
+            在 LINE 中開啟
+        </button>
+    </div>
+
+    <!-- Header -->
+    <header class="bg-white shadow-sm py-3 px-4 z-10 flex justify-between items-center sticky top-0" id="app-header">
+        <h1 class="text-lg font-bold flex items-center gap-2 text-slate-800">
+            <i class="fa-solid fa-map-pin text-line"></i>
+            PinPin 足跡
+        </h1>
+        <div id="status-indicator" class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-500">
+            Wait For Init
+        </div>
+    </header>
+
+    <!-- Map Area -->
+    <div class="relative w-full shadow-inner border-b border-gray-200">
+        <div id="map"></div>
+        <!-- 重新定位按鈕 (Floating) -->
+        <button id="recenter-btn"
+            class="absolute bottom-4 right-4 bg-white p-2.5 rounded-full shadow-lg z-[400] text-slate-600 active:bg-gray-50"
+            title="回到目前位置">
+            <i class="fa-solid fa-crosshairs text-lg"></i>
+        </button>
+    </div>
+
+    <!-- Actions Area -->
+    <main class="flex-1 max-w-md mx-auto w-full p-4 flex flex-col gap-5">
+
+        <!-- 主要操作卡片 -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col gap-4">
+            <div class="flex flex-col gap-1">
+                <label class="text-xs font-bold text-slate-400 uppercase tracking-wide">目前座標</label>
+                <div class="flex items-baseline gap-2">
+                    <span id="current-lat" class="text-sm font-mono text-slate-600">--.----</span>
+                    <span class="text-slate-300">,</span>
+                    <span id="current-lng" class="text-sm font-mono text-slate-600">--.----</span>
+                </div>
+                <div class="text-xs text-slate-400 mt-1" id="location-accuracy">精準度: 未知</div>
+            </div>
+
+            <button id="save-btn"
+                class="w-full bg-line text-white font-bold text-lg py-3.5 rounded-xl shadow-lg shadow-green-200/50 active:scale-[0.98] transition flex items-center justify-center gap-2 hover:bg-line-dark">
+                <i class="fa-solid fa-plus-circle"></i>
+                紀錄當前位置
+            </button>
+        </div>
+
+        <!-- 列表區域 -->
+        <div class="flex flex-col gap-3">
+            <div class="flex justify-between items-end px-1">
+                <h2 class="font-bold text-slate-700 text-lg">已儲存的地點</h2>
+                <span class="text-xs text-slate-400 bg-white px-2 py-1 rounded-full border" id="saved-count">0</span>
+            </div>
+
+            <div id="location-list" class="flex flex-col gap-3 pb-8">
+                <!-- 列表項目樣板 (會由 JS 動態生成) -->
+                <!-- 
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex justify-between items-center group">
+                    <div class="flex-1 min-w-0 pr-3">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold">停車</span>
+                            <h3 class="font-bold text-slate-800 truncate">百貨公司 B3 停車場</h3>
+                        </div>
+                        <p class="text-xs text-slate-400 flex items-center gap-1">
+                            <i class="fa-regular fa-clock"></i> 2024/01/30 14:30
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <a href="#" class="bg-blue-50 text-blue-600 p-2.5 rounded-lg hover:bg-blue-100 transition active:scale-95" title="導航">
+                            <i class="fa-solid fa-location-arrow"></i>
+                        </a>
+                        <button class="bg-red-50 text-red-500 p-2.5 rounded-lg hover:bg-red-100 transition active:scale-95" title="刪除">
+                            <i class="fa-regular fa-trash-can"></i>
+                        </button>
+                    </div>
+                </div> 
+                -->
+                <div class="text-center py-10 text-slate-400">
+                    <i class="fa-solid fa-map-location-dot text-4xl mb-3 opacity-30"></i>
+                    <p class="text-sm">還沒有儲存任何地點</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- JS Logic -->
+    <script>
+        // 設定區
+        // TODO: 請填入您的 LIFF ID
+        const LIFF_ID = "YOUR_LIFF_ID_HERE";
+
+        // 狀態變數
+        let currentPos = { lat: 25.0330, lng: 121.5654 }; // 預設台北 101
+        let map = null;
+        let currentMarker = null;
+        let isLineClient = false;
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', async () => {
+            initMap();
+            loadSavedLocations();
+
+            try {
+                if (LIFF_ID && LIFF_ID !== "YOUR_LIFF_ID_HERE") {
+                    await liff.init({ liffId: LIFF_ID });
+                    isLineClient = liff.isInClient();
+
+                    if (!isLineClient) {
+                        // 嘗試外部瀏覽器開啟 LINE 的邏輯
+                        handleFallbackMode();
+                    } else {
+                        // 在 LINE 內，自動登入取得更多資訊（如果需要）
+                        // if (!liff.isLoggedIn()) liff.login();
+                        updateStatus("LINE LIFF Mode", "bg-green-100 text-green-700");
+                    }
+                } else {
+                    console.warn("LIFF ID 未設定");
+                    handleFallbackMode("設定尚未完成");
+                }
+            } catch (err) {
+                console.error("LIFF Init Error:", err);
+                handleFallbackMode("Error: " + err.code);
+            }
+
+            // 無論是否 LIFF，都嘗試獲取位置
+            startGeolocation();
+        });
+
+        function handleFallbackMode(msg) {
+            document.getElementById('line-fallback-banner').classList.remove('hidden');
+            document.getElementById('open-line-btn').onclick = () => {
+                if (LIFF_ID && LIFF_ID !== "YOUR_LIFF_ID_HERE") {
+                    location.href = `https://line.me/R/app/${LIFF_ID}`;
+                } else {
+                    Swal.fire("未設定 LIFF ID", "請先在程式碼中填入 LIFF ID", "warning");
+                }
+            };
+            updateStatus("Browser Mode", "bg-amber-100 text-amber-700");
+        }
+
+        function updateStatus(text, classes) {
+            const el = document.getElementById('status-indicator');
+            el.innerText = text;
+            el.className = `text-xs px-2 py-1 rounded font-bold ${classes}`;
+        }
+
+        // --- Map & Geolocation ---
+        function initMap() {
+            // 預設台灣中心
+            map = L.map('map', { zoomControl: false }).setView([currentPos.lat, currentPos.lng], 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap',
+                maxZoom: 19
+            }).addTo(map);
+
+            currentMarker = L.marker([currentPos.lat, currentPos.lng], {
+                draggable: true
+            }).addTo(map);
+
+            // 拖曳 Marker 更新目前座標 (手動微調)
+            currentMarker.on('dragend', function (e) {
+                const pos = e.target.getLatLng();
+                currentPos.lat = pos.lat;
+                currentPos.lng = pos.lng;
+                updateCoordDisplay(pos.lat, pos.lng, "Manual");
+            });
+
+            // 重新定位按鈕
+            document.getElementById('recenter-btn').addEventListener('click', () => {
+                startGeolocation();
+            });
+        }
+
+        function startGeolocation() {
+            if (!navigator.geolocation) {
+                Swal.fire('錯誤', '您的裝置未開啟定位功能', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('recenter-btn');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const { latitude, longitude, accuracy } = position.coords;
+                    currentPos = { lat: latitude, lng: longitude };
+
+                    // Update Map
+                    map.setView([latitude, longitude], 17);
+                    currentMarker.setLatLng([latitude, longitude]);
+
+                    // Update UI
+                    updateCoordDisplay(latitude, longitude, accuracy);
+                    btn.innerHTML = '<i class="fa-solid fa-crosshairs"></i>';
+                },
+                (error) => {
+                    console.error(error);
+                    Swal.fire('無法取得位置', '請確認您已允許位置權限。如果是在 LINE 中，請檢查設定。', 'warning');
+                    btn.innerHTML = '<i class="fa-solid fa-crosshairs"></i>';
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        }
+
+        function updateCoordDisplay(lat, lng, acc) {
+            document.getElementById('current-lat').innerText = lat.toFixed(5);
+            document.getElementById('current-lng').innerText = lng.toFixed(5);
+            const accText = typeof acc === 'number' ? `誤差約 ${Math.round(acc)} 公尺` : (acc || "手動調整");
+            document.getElementById('location-accuracy').innerText = accText;
+        }
+
+        // --- Save Logic ---
+        document.getElementById('save-btn').addEventListener('click', async () => {
+            const { value: formValues } = await Swal.fire({
+                title: '儲存位置',
+                html: `
+                    <div class="flex flex-col gap-3 text-left">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">地點名稱</label>
+                            <input id="swal-input1" class="swal2-input !m-0 !w-full" placeholder="例如：停車位 A13">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">標籤</label>
+                            <div class="flex gap-2 justify-center" id="tag-selector">
+                                <label class="cursor-pointer">
+                                    <input type="radio" name="loc-tag" value="parking" class="peer sr-only" checked>
+                                    <div class="px-3 py-2 rounded-lg bg-gray-100 text-gray-400 peer-checked:bg-blue-100 peer-checked:text-blue-600 border border-transparent peer-checked:border-blue-300 transition text-sm">
+                                        <i class="fa-solid fa-square-parking"></i> 停車
+                                    </div>
+                                </label>
+                                <label class="cursor-pointer">
+                                    <input type="radio" name="loc-tag" value="food" class="peer sr-only">
+                                    <div class="px-3 py-2 rounded-lg bg-gray-100 text-gray-400 peer-checked:bg-orange-100 peer-checked:text-orange-600 border border-transparent peer-checked:border-orange-300 transition text-sm">
+                                        <i class="fa-solid fa-utensils"></i> 美食
+                                    </div>
+                                </label>
+                                <label class="cursor-pointer">
+                                    <input type="radio" name="loc-tag" value="star" class="peer sr-only">
+                                    <div class="px-3 py-2 rounded-lg bg-gray-100 text-gray-400 peer-checked:bg-yellow-100 peer-checked:text-yellow-600 border border-transparent peer-checked:border-yellow-300 transition text-sm">
+                                        <i class="fa-solid fa-star"></i> 景點
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                `,
+                focusConfirm: false,
+                showCancelButton: true,
+                confirmButtonText: '儲存',
+                confirmButtonColor: '#06C755', // LINE Green
+                cancelButtonText: '取消',
+                preConfirm: () => {
+                    const name = document.getElementById('swal-input1').value;
+                    const tag = document.querySelector('input[name="loc-tag"]:checked').value;
+                    if (!name) {
+                        Swal.showValidationMessage('請輸入地點名稱');
+                    }
+                    return { name: name, tag: tag }
+                }
+            });
+
+            if (formValues) {
+                saveLocation(formValues.name, formValues.tag);
+            }
+        });
+
+        function saveLocation(name, tag) {
+            const newItem = {
+                id: Date.now().toString(),
+                name: name,
+                lat: currentPos.lat,
+                lng: currentPos.lng,
+                tag: tag,
+                timestamp: Date.now(),
+                dateStr: new Date().toLocaleString('zh-TW', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            };
+
+            const list = getSavedList();
+            list.unshift(newItem); // 加到最前面
+            localStorage.setItem('saved_locations', JSON.stringify(list));
+
+            loadSavedLocations();
+            Swal.fire({
+                icon: 'success',
+                title: '已儲存',
+                timer: 1500,
+                showConfirmButton: false
+            });
+        }
+
+        function getSavedList() {
+            const saved = localStorage.getItem('saved_locations');
+            return saved ? JSON.parse(saved) : [];
+        }
+
+        function deleteLocation(id) {
+            Swal.fire({
+                title: '確定刪除?',
+                text: "刪除後無法復原",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#ef4444',
+                confirmButtonText: '刪除',
+                cancelButtonText: '取消'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    let list = getSavedList();
+                    list = list.filter(item => item.id !== id);
+                    localStorage.setItem('saved_locations', JSON.stringify(list));
+                    loadSavedLocations();
+                }
+            });
+        }
+
+        // --- Render List ---
+        function loadSavedLocations() {
+            const list = getSavedList();
+            const container = document.getElementById('location-list');
+            document.getElementById('saved-count').innerText = list.length;
+
+            if (list.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-10 text-slate-400">
+                        <i class="fa-solid fa-map-location-dot text-4xl mb-3 opacity-30"></i>
+                        <p class="text-sm">還沒有儲存任何地點</p>
+                    </div>`;
+                return;
+            }
+
+            container.innerHTML = '';
+            list.forEach(item => {
+                // Tag Styles
+                let tagHtml = '';
+                if (item.tag === 'parking') tagHtml = `<span class="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold"><i class="fa-solid fa-square-parking"></i> 停車</span>`;
+                else if (item.tag === 'food') tagHtml = `<span class="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold"><i class="fa-solid fa-utensils"></i> 美食</span>`;
+                else tagHtml = `<span class="bg-yellow-100 text-yellow-700 text-[10px] px-1.5 py-0.5 rounded font-bold"><i class="fa-solid fa-star"></i> 景點</span>`;
+
+                const el = document.createElement('div');
+                el.className = 'bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex justify-between items-center group';
+                el.innerHTML = `
+                    <div class="flex-1 min-w-0 pr-3 cursor-pointer" onclick="viewOnMap(${item.lat}, ${item.lng})">
+                        <div class="flex items-center gap-2 mb-1">
+                            ${tagHtml}
+                            <h3 class="font-bold text-slate-800 truncate text-base">${item.name}</h3>
+                        </div>
+                        <p class="text-xs text-slate-400 flex items-center gap-1">
+                            <i class="fa-regular fa-clock"></i> ${item.dateStr}
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <a href="https://www.google.com/maps/search/?api=1&query=${item.lat},${item.lng}" target="_blank" class="bg-blue-50 text-blue-600 p-2.5 rounded-lg hover:bg-blue-100 transition active:scale-95" title="Google Maps 導航">
+                            <i class="fa-solid fa-location-arrow text-lg"></i>
+                        </a>
+                        <button onclick="deleteLocation('${item.id}')" class="bg-red-50 text-red-500 p-2.5 rounded-lg hover:bg-red-100 transition active:scale-95" title="刪除">
+                            <i class="fa-regular fa-trash-can text-lg"></i>
+                        </button>
+                    </div>
+                `;
+                container.appendChild(el);
+            });
+        }
+
+        function viewOnMap(lat, lng) {
+            // 點擊列表項目，移動地圖視角
+            currentPos = { lat, lng };
+            map.setView([lat, lng], 17);
+            currentMarker.setLatLng([lat, lng]);
+            updateCoordDisplay(lat, lng, 0);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+    </script>
+</body>
+
+</html>
